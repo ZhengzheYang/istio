@@ -18,76 +18,43 @@ import (
 	"testing"
 	"time"
 
+	"istio.io/istio/pkg/test/framework/components/namespace"
+
 	"istio.io/istio/pkg/config/protocol"
 	"istio.io/istio/pkg/test/framework"
 	"istio.io/istio/pkg/test/framework/components/echo"
 	"istio.io/istio/pkg/test/framework/components/echo/echoboot"
-	"istio.io/istio/pkg/test/framework/components/istio"
-	"istio.io/istio/pkg/test/framework/components/namespace"
-	"istio.io/istio/pkg/test/framework/components/pilot"
-	"istio.io/istio/pkg/test/framework/resource"
-	"istio.io/istio/pkg/test/framework/resource/environment"
 	"istio.io/istio/pkg/test/util/retry"
 )
-
-var p pilot.Instance
-var ns namespace.Instance
-
-// This tests VM mesh expansion. Rather than deal with the infra to get a real VM, we will use a pod
-// with no Service, no DNS, no service account, etc to simulate a VM.
-func TestMain(m *testing.M) {
-	framework.
-		NewSuite("vm_test", m).
-		RequireSingleCluster().
-		RequireEnvironment(environment.Kube).
-		SetupOnEnv(environment.Kube, func(ctx resource.Context) error {
-			var err error
-			ns, err = namespace.New(ctx, namespace.Config{
-				Prefix: "virtual-machine",
-				Inject: true,
-			})
-			return err
-		}).
-		SetupOnEnv(environment.Kube, istio.Setup(nil, func(cfg *istio.Config) {
-			cfg.ControlPlaneValues = `
-values:
-  global:
-    meshExpansion:
-      enabled: true`
-		})).
-		Setup(func(ctx resource.Context) (err error) {
-			if p, err = pilot.New(ctx, pilot.Config{}); err != nil {
-				return err
-			}
-			return nil
-		}).
-		Run()
-}
 
 func TestVmTraffic(t *testing.T) {
 	framework.
 		NewTest(t).
 		Run(func(ctx framework.TestContext) {
+			ns = namespace.NewOrFail(t, ctx, namespace.Config{
+				Prefix: "virtual-machine",
+				Inject: true,
+			})
 			// Set up strict mTLS. This gives a bit more assurance the calls are actually going through envoy,
 			// and certs are set up correctly.
 			ctx.ApplyConfigOrFail(ctx, ns.Name(), `
 apiVersion: security.istio.io/v1beta1
 kind: PeerAuthentication
 metadata:
-  name: default
+ name: default
 spec:
-  mtls:
-    mode: STRICT
+ mtls:
+   mode: STRICT
 ---
 apiVersion: networking.istio.io/v1alpha3
 kind: DestinationRule
 metadata:
-  name: send-mtls
+ name: send-mtls
 spec:
-  host: "*.svc.cluster.local"
-  trafficPolicy:
-    tls:
-      mode: ISTIO_MUTUAL
+ host: "*.svc.cluster.local"
+ trafficPolicy:
+   tls:
+     mode: ISTIO_MUTUAL
 `)
 			ports := []echo.Port{
 				{
@@ -98,10 +65,17 @@ spec:
 					ServicePort:  8090,
 				},
 			}
-			var pod, vm echo.Instance
+			var pod, vmA, vmB echo.Instance
 			echoboot.NewBuilderOrFail(t, ctx).
-				With(&vm, echo.Config{
-					Service:    "vm",
+				With(&vmA, echo.Config{
+					Service:    "vm-a",
+					Namespace:  ns,
+					Ports:      ports,
+					Pilot:      p,
+					DeployAsVM: true,
+				}).
+				With(&vmB, echo.Config{
+					Service:    "vm-b",
 					Namespace:  ns,
 					Ports:      ports,
 					Pilot:      p,
@@ -117,7 +91,7 @@ spec:
 
 			// Check pod -> VM
 			retry.UntilSuccessOrFail(ctx, func() error {
-				r, err := pod.Call(echo.CallOptions{Target: vm, PortName: "http"})
+				r, err := pod.Call(echo.CallOptions{Target: vmB, PortName: "http"})
 				if err != nil {
 					return err
 				}
@@ -125,7 +99,15 @@ spec:
 			}, retry.Delay(100*time.Millisecond))
 			// Check VM -> pod
 			retry.UntilSuccessOrFail(ctx, func() error {
-				r, err := vm.Call(echo.CallOptions{Target: pod, PortName: "http"})
+				r, err := vmB.Call(echo.CallOptions{Target: pod, PortName: "http"})
+				if err != nil {
+					return err
+				}
+				return r.CheckOK()
+			}, retry.Delay(100*time.Millisecond))
+			// Check VM -> VM
+			retry.UntilSuccessOrFail(ctx, func() error {
+				r, err := vmA.Call(echo.CallOptions{Target: vmB, PortName: "http"})
 				if err != nil {
 					return err
 				}

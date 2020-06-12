@@ -17,10 +17,11 @@ package vm
 import (
 	"bufio"
 	"fmt"
-	"istio.io/istio/pkg/test/framework/image"
 	"os"
 	"testing"
 	"time"
+
+	"istio.io/istio/pkg/test/framework/image"
 
 	"istio.io/istio/pkg/test/framework/components/namespace"
 
@@ -32,8 +33,8 @@ import (
 )
 
 type VMConfig struct {
-	VMHub string
-	VMTag string
+	VMHub   string
+	VMTag   string
 	VMImage string
 }
 
@@ -68,9 +69,9 @@ func TestVmTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, OSImage := range configList {
-		VMConfigs = append(VMConfigs, VMConfig {
-			VMHub: settings.Hub,
-			VMTag: settings.Tag,
+		VMConfigs = append(VMConfigs, VMConfig{
+			VMHub:   settings.Hub,
+			VMTag:   settings.Tag,
 			VMImage: OSImage,
 		})
 	}

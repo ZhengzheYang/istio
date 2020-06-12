@@ -15,7 +15,10 @@
 package vm
 
 import (
+	"bufio"
 	"fmt"
+	"istio.io/istio/pkg/test/framework/image"
+	"os"
 	"testing"
 	"time"
 
@@ -28,24 +31,50 @@ import (
 	"istio.io/istio/pkg/test/util/retry"
 )
 
+type VMConfig struct {
+	VMHub string
+	VMTag string
+	VMImage string
+}
+
 func TestVmTraffic(t *testing.T) {
-	// TODO: read from a config list to construct the test matrix
-	VMConfigs := []struct {
-		VMHub string
-		VMTag string
-		VMImage string
-	} {
-		{
-			VMHub: "gcr.io/zhengzhey-csm",
-			VMTag: "latest",
-			VMImage: "app_sidecar_xenial",
-		},
-		{
-			VMHub: "gcr.io/istio-testing",
-			VMTag: "latest",
-			VMImage: "app_sidecar",
-		},
+	// read from a config list to construct the test matrix
+	file, err := os.Open("testdata/OS_Support_List")
+	if err != nil {
+		t.Fatal(err)
 	}
+	scanner := bufio.NewScanner(file)
+	configList := make([]string, 0)
+	for scanner.Scan() {
+		imageName := scanner.Text()
+		// ignore empty line
+		if imageName == "" {
+			continue
+		}
+		configList = append(configList, imageName)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	VMConfigs := make([]VMConfig, 0)
+
+	// read Hub and Tag info from command line
+	settings, err := image.SettingsFromCommandLine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, OSImage := range configList {
+		VMConfigs = append(VMConfigs, VMConfig {
+			VMHub: settings.Hub,
+			VMTag: settings.Tag,
+			VMImage: OSImage,
+		})
+	}
+
 	framework.
 		NewTest(t).
 		Run(func(ctx framework.TestContext) {
@@ -86,51 +115,43 @@ spec:
 			for i, VMConfig := range VMConfigs {
 				ctx.NewSubTest(VMConfig.VMImage).
 					Run(func(ctx framework.TestContext) {
-					var pod, vm echo.Instance
-					echoboot.NewBuilderOrFail(t, ctx).
-						With(&vm, echo.Config{
-							Service:    fmt.Sprintf("vm-legacy-%v", i),
-							Namespace:  ns,
-							Ports:      ports,
-							Pilot:      p,
-							DeployAsVM: true,
-							VMHub:      VMConfig.VMHub,
-							VMTag:      VMConfig.VMTag,
-							VMImage:    VMConfig.VMImage,
-						}).
-						With(&pod, echo.Config{
-							Service:   "pod",
-							Namespace: ns,
-							Ports:     ports,
-							Pilot:     p,
-						}).
-						BuildOrFail(t)
+						var pod, vm echo.Instance
+						echoboot.NewBuilderOrFail(t, ctx).
+							With(&vm, echo.Config{
+								Service:    fmt.Sprintf("vm-legacy-%v", i),
+								Namespace:  ns,
+								Ports:      ports,
+								Pilot:      p,
+								DeployAsVM: true,
+								VMHub:      VMConfig.VMHub,
+								VMTag:      VMConfig.VMTag,
+								VMImage:    VMConfig.VMImage,
+							}).
+							With(&pod, echo.Config{
+								Service:   "pod",
+								Namespace: ns,
+								Ports:     ports,
+								Pilot:     p,
+							}).
+							BuildOrFail(t)
 
-					// Check pod -> VM
-					retry.UntilSuccessOrFail(ctx, func() error {
-						r, err := pod.Call(echo.CallOptions{Target: vm, PortName: "http"})
-						if err != nil {
-							return err
-						}
-						return r.CheckOK()
-					}, retry.Delay(100*time.Millisecond))
-					// Check VM -> pod
-					retry.UntilSuccessOrFail(ctx, func() error {
-						r, err := vm.Call(echo.CallOptions{Target: pod, PortName: "http"})
-						if err != nil {
-							return err
-						}
-						return r.CheckOK()
-					}, retry.Delay(100*time.Millisecond))
-					// Check VM -> VM
-					//retry.UntilSuccessOrFail(ctx, func() error {
-					//	r, err := vmA.Call(echo.CallOptions{Target: vmB, PortName: "http"})
-					//	if err != nil {
-					//		return err
-					//	}
-					//	return r.CheckOK()
-					//}, retry.Delay(100*time.Millisecond))
-				})
+						// Check pod -> VM
+						retry.UntilSuccessOrFail(ctx, func() error {
+							r, err := pod.Call(echo.CallOptions{Target: vm, PortName: "http"})
+							if err != nil {
+								return err
+							}
+							return r.CheckOK()
+						}, retry.Delay(100*time.Millisecond))
+						// Check VM -> pod
+						retry.UntilSuccessOrFail(ctx, func() error {
+							r, err := vm.Call(echo.CallOptions{Target: pod, PortName: "http"})
+							if err != nil {
+								return err
+							}
+							return r.CheckOK()
+						}, retry.Delay(100*time.Millisecond))
+					})
 			}
 		})
 }

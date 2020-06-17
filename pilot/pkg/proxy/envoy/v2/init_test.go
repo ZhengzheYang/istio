@@ -31,7 +31,6 @@ import (
 
 	"istio.io/istio/pilot/pkg/model"
 
-	v2 "istio.io/istio/pilot/pkg/proxy/envoy/v2"
 	v3 "istio.io/istio/pilot/pkg/proxy/envoy/v3"
 
 	xdsapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
@@ -49,22 +48,6 @@ type AdsClient discovery.AggregatedDiscoveryService_StreamAggregatedResourcesCli
 var nodeMetadata = &structpb.Struct{Fields: map[string]*structpb.Value{
 	"ISTIO_VERSION": {Kind: &structpb.Value_StringValue{StringValue: "1.3"}}, // actual value doesn't matter
 }}
-
-// Extract cluster load assignment from a discovery response.
-func getLoadAssignmentV2(res1 *xdsapi.DiscoveryResponse) (*endpoint.ClusterLoadAssignment, error) {
-	if res1.TypeUrl != v3.EndpointType {
-		return nil, errors.New("Invalid typeURL" + res1.TypeUrl)
-	}
-	if res1.Resources[0].TypeUrl != v3.EndpointType {
-		return nil, errors.New("Invalid resource typeURL" + res1.Resources[0].TypeUrl)
-	}
-	cla := &endpoint.ClusterLoadAssignment{}
-	err := ptypes.UnmarshalAny(res1.Resources[0], cla)
-	if err != nil {
-		return nil, err
-	}
-	return cla, nil
-}
 
 func getLoadAssignment(res1 *discovery.DiscoveryResponse) (*endpoint.ClusterLoadAssignment, error) {
 	if res1.TypeUrl != v3.EndpointType {
@@ -88,7 +71,7 @@ func testIP(id uint32) string {
 }
 
 // connectADSv2 creates a direct, insecure connection using raw GRPC
-func connectADSv2(url string) (ads.AggregatedDiscoveryService_StreamAggregatedResourcesClient, util.TearDownFunc, error) {
+func connectADSv2(url string) (AdsClientv2, util.TearDownFunc, error) {
 	conn, err := grpc.Dial(url, grpc.WithInsecure(), grpc.WithBlock())
 	if err != nil {
 		return nil, nil, fmt.Errorf("GRPC dial failed: %s", err)
@@ -180,10 +163,10 @@ func adsReceive(ads AdsClient, to time.Duration) (*discovery.DiscoveryResponse, 
 	return ads.Recv()
 }
 
-func sendEDSReq(clusters []string, node string, edsClient AdsClientv2) error {
-	err := edsClient.Send(&xdsapi.DiscoveryRequest{
+func sendEDSReq(clusters []string, node string, edsClient AdsClient) error {
+	err := edsClient.Send(&discovery.DiscoveryRequest{
 		ResponseNonce: time.Now().String(),
-		Node: &corev2.Node{
+		Node: &corev3.Node{
 			Id:       node,
 			Metadata: nodeMetadata,
 		},
@@ -197,16 +180,16 @@ func sendEDSReq(clusters []string, node string, edsClient AdsClientv2) error {
 	return nil
 }
 
-func sendEDSNack(_ []string, node string, client AdsClientv2) error {
-	return sendXdsv2(node, client, v3.EndpointType, "NOPE!")
+func sendEDSNack(_ []string, node string, client AdsClient) error {
+	return sendXds(node, client, v3.EndpointType, "NOPE!")
 }
 
 // If pilot is reset, envoy will connect with a nonce/version info set on the previous
 // connection to pilot. In HA case this may be a different pilot. This is a regression test for
 // reconnect problems.
-func sendEDSReqReconnect(clusters []string, client AdsClientv2, res *xdsapi.DiscoveryResponse) error {
-	err := client.Send(&xdsapi.DiscoveryRequest{
-		Node: &corev2.Node{
+func sendEDSReqReconnect(clusters []string, client AdsClient, res *discovery.DiscoveryResponse) error {
+	err := client.Send(&discovery.DiscoveryRequest{
+		Node: &corev3.Node{
 			Id:       sidecarID(app3Ip, "app3"),
 			Metadata: nodeMetadata,
 		},
@@ -221,18 +204,18 @@ func sendEDSReqReconnect(clusters []string, client AdsClientv2, res *xdsapi.Disc
 	return nil
 }
 
-func sendLDSReq(node string, client AdsClientv2) error {
-	return sendXdsv2(node, client, v2.ListenerType, "")
+func sendLDSReq(node string, client AdsClient) error {
+	return sendXds(node, client, v3.ListenerType, "")
 }
 
-func sendLDSReqWithLabels(node string, ldsclient AdsClientv2, labels map[string]string) error {
-	err := ldsclient.Send(&xdsapi.DiscoveryRequest{
+func sendLDSReqWithLabels(node string, ldsclient AdsClient, labels map[string]string) error {
+	err := ldsclient.Send(&discovery.DiscoveryRequest{
 		ResponseNonce: time.Now().String(),
-		Node: &corev2.Node{
+		Node: &corev3.Node{
 			Id:       node,
 			Metadata: model.NodeMetadata{Labels: labels}.ToStruct(),
 		},
-		TypeUrl: v2.ListenerType})
+		TypeUrl: v3.ListenerType})
 	if err != nil {
 		return fmt.Errorf("LDS request failed: %s", err)
 	}
@@ -240,18 +223,18 @@ func sendLDSReqWithLabels(node string, ldsclient AdsClientv2, labels map[string]
 	return nil
 }
 
-func sendLDSNack(node string, client AdsClientv2) error {
-	return sendXdsv2(node, client, v2.ListenerType, "NOPE!")
+func sendLDSNack(node string, client AdsClient) error {
+	return sendXds(node, client, v3.ListenerType, "NOPE!")
 }
 
-func sendRDSReq(node string, routes []string, nonce string, rdsclient AdsClientv2) error {
-	err := rdsclient.Send(&xdsapi.DiscoveryRequest{
+func sendRDSReq(node string, routes []string, nonce string, rdsclient AdsClient) error {
+	err := rdsclient.Send(&discovery.DiscoveryRequest{
 		ResponseNonce: nonce,
-		Node: &corev2.Node{
+		Node: &corev3.Node{
 			Id:       node,
 			Metadata: nodeMetadata,
 		},
-		TypeUrl:       v2.RouteType,
+		TypeUrl:       v3.RouteType,
 		ResourceNames: routes})
 	if err != nil {
 		return fmt.Errorf("RDS request failed: %s", err)
@@ -260,14 +243,14 @@ func sendRDSReq(node string, routes []string, nonce string, rdsclient AdsClientv
 	return nil
 }
 
-func sendRDSNack(node string, _ []string, nonce string, rdsclient AdsClientv2) error {
-	err := rdsclient.Send(&xdsapi.DiscoveryRequest{
+func sendRDSNack(node string, _ []string, nonce string, rdsclient AdsClient) error {
+	err := rdsclient.Send(&discovery.DiscoveryRequest{
 		ResponseNonce: nonce,
-		Node: &corev2.Node{
+		Node: &corev3.Node{
 			Id:       node,
 			Metadata: nodeMetadata,
 		},
-		TypeUrl:     v2.RouteType,
+		TypeUrl:     v3.RouteType,
 		ErrorDetail: &status.Status{Message: "NOPE!"}})
 	if err != nil {
 		return fmt.Errorf("RDS NACK failed: %s", err)
@@ -280,12 +263,8 @@ func sendCDSReq(node string, client AdsClient) error {
 	return sendXds(node, client, v3.ClusterType, "")
 }
 
-func sendCDSReqv2(node string, client AdsClientv2) error {
-	return sendXdsv2(node, client, v2.ClusterType, "")
-}
-
-func sendCDSNackv2(node string, client AdsClientv2) error {
-	return sendXdsv2(node, client, v2.ClusterType, "NOPE!")
+func sendCDSNack(node string, client AdsClient) error {
+	return sendXds(node, client, v3.ClusterType, "NOPE!")
 }
 
 func sendXdsv2(node string, client AdsClientv2, typeURL string, errMsg string) error {

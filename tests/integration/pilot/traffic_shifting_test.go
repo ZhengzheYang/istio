@@ -16,14 +16,17 @@ package pilot
 
 import (
 	"fmt"
-	"istio.io/istio/pkg/test/framework"
-	"istio.io/istio/pkg/test/framework/components/echo/echoboot"
-	"istio.io/istio/pkg/test/util/file"
-	"istio.io/istio/pkg/test/util/tmpl"
 	"math"
 	"strings"
 	"testing"
 	"time"
+
+	"istio.io/istio/pkg/test/framework/label"
+
+	"istio.io/istio/pkg/test/framework"
+	"istio.io/istio/pkg/test/framework/components/echo/echoboot"
+	"istio.io/istio/pkg/test/util/file"
+	"istio.io/istio/pkg/test/util/tmpl"
 
 	"istio.io/istio/pkg/test/util/retry"
 
@@ -68,17 +71,25 @@ type VirtualServiceConfig struct {
 
 func TestTrafficShifting(t *testing.T) {
 	// set up regular echo instances
-	trafficShifting(t)
+	trafficShifting(t, []string{})
 
 }
 
 func TestVMTrafficShifting(t *testing.T) {
 	// set up echo instances deployed as VMs
-	testcases := []string{"app_sidecar_xenial"}
-	trafficShifting(t, testcases...)
+	testcases := []string{"app_sidecar_ubuntu_bionic"}
+	trafficShifting(t, testcases)
 }
 
-func trafficShifting(t *testing.T, vmImages ...string) {
+func TestVMTrafficShiftingPost(t *testing.T) {
+	// set up echo instances deployed as VMs
+	testcases := []string{"app_sidecar_ubuntu_xenial", "app_sidecar_ubuntu_focal", "app_sidecar_ubuntu_bionic",
+		"app_sidecar_debian_9", "app_sidecar_debian_10"}
+	// mark it to be post-submit
+	trafficShifting(t, testcases, label.Postsubmit)
+}
+
+func trafficShifting( t *testing.T, vmImages []string, label ...label.Instance) {
 	// Traffic distribution
 	weights := map[string][]int32{
 		"20-80":    {20, 80},
@@ -87,60 +98,65 @@ func trafficShifting(t *testing.T, vmImages ...string) {
 	}
 	framework.
 		NewTest(t).
+		Features("traffic.shifting").
+		Label(label...).
 		Run(func(ctx framework.TestContext) {
 			ns := namespace.NewOrFail(t, ctx, namespace.Config{
 				Prefix: "traffic-shifting",
 				Inject: true,
 			})
 
-			if len(vmImages) == 0 {
-				vmImages = append(vmImages, "")
+		if len(vmImages) == 0 {
+			vmImages = append(vmImages, "")
+		}
+
+		// continue using this one client to call different version of hosts
+		var client echo.Instance
+		echoboot.NewBuilderOrFail(t, ctx).
+			With(&client, echoVMConfig(ns, "a", "")).
+			BuildOrFail(t)
+
+		// build and test with set of VM instances
+		for i, vmImage := range vmImages {
+			if vmImage != "" {
+				t.Logf("Running as VMs. Testing %v", vmImage)
 			}
 
-			for _, vmImage := range vmImages{
-				testName := vmImage
-				if testName == "" {
-					testName = "non_vm"
-				}
-				ctx.NewSubTest(testName).
-					Run(func(ctx framework.TestContext) {
-						if vmImage != "" {
-							t.Log("running as VMs")
-						}
-						var instances [4]echo.Instance
-						echoboot.NewBuilderOrFail(t, ctx).
-							With(&instances[0], echoVMConfig(ns, "a", "")).
-							With(&instances[1], echoVMConfig(ns, "b", vmImage)).
-							With(&instances[2], echoVMConfig(ns, "c", vmImage)).
-							With(&instances[3], echoVMConfig(ns, "d", vmImage)).
-							BuildOrFail(t)
+			// build instances with their image name
+			var instances [3]echo.Instance
+			hosts := []string{fmt.Sprintf("b-%v", i),
+				fmt.Sprintf("c-%v", i),
+				fmt.Sprintf("d-%v", i)}
+			echoboot.NewBuilderOrFail(t, ctx).
+				With(&instances[0], echoVMConfig(ns, hosts[0], vmImage)).
+				With(&instances[1], echoVMConfig(ns, hosts[1], vmImage)).
+				With(&instances[2], echoVMConfig(ns, hosts[2], vmImage)).
+				BuildOrFail(t)
 
-						hosts := []string{"b", "c", "d"}
+			// traverse the weights and apply the VirtualService
+			for k, v := range weights {
+				t.Run(k, func(t *testing.T){
+					v = append(v, make([]int32, 3-len(v))...)
 
-						for k, v := range weights {
-							t.Run(k, func(t *testing.T) {
-								v = append(v, make([]int32, 3-len(v))...)
+					vsc := VirtualServiceConfig{
+						"traffic-shifting-rule",
+						hosts[0],
+						hosts[1],
+						hosts[2],
+						ns.Name(),
+						v[0],
+						v[1],
+						v[2],
+					}
 
-								vsc := VirtualServiceConfig{
-									"traffic-shifting-rule",
-									hosts[0],
-									hosts[1],
-									hosts[2],
-									ns.Name(),
-									v[0],
-									v[1],
-									v[2],
-								}
+					deployment := tmpl.EvaluateOrFail(t, file.AsStringOrFail(t, "testdata/traffic-shifting.yaml"), vsc)
+					ctx.ApplyConfigOrFail(t, ns.Name(), deployment)
 
-								deployment := tmpl.EvaluateOrFail(t, file.AsStringOrFail(t, "testdata/traffic-shifting.yaml"), vsc)
-								ctx.ApplyConfigOrFail(t, ns.Name(), deployment)
-
-								sendTraffic(t, 100, instances[0], instances[1], hosts, v, errorThreshold)
-							})
-						}
-					})
+					sendTraffic(t, 100, client, instances[0], hosts, v, errorThreshold)
+				})
 			}
-		})
+		}
+	})
 }
 
 func echoConfig(ns namespace.Instance, name string) echo.Config {
@@ -153,7 +169,7 @@ func echoConfig(ns namespace.Instance, name string) echo.Config {
 				Protocol: protocol.HTTP,
 				// We use a port > 1024 to not require root
 				InstancePort: 8090,
-				ServicePort: 8090,
+				ServicePort:  8090,
 			},
 		},
 		Subsets: []echo.SubsetConfig{{}},

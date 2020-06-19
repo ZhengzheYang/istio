@@ -15,10 +15,11 @@
 package pilot
 
 import (
+	"testing"
+
 	"istio.io/istio/pkg/config/protocol"
 	"istio.io/istio/pkg/test/framework/components/echo"
 	"istio.io/istio/pkg/test/framework/components/namespace"
-	"testing"
 
 	"istio.io/istio/pkg/test/framework"
 	"istio.io/istio/pkg/test/framework/components/istio"
@@ -64,12 +65,12 @@ func echoVMConfig(ns namespace.Instance, name string, vmImage string) echo.Confi
 				Protocol: protocol.HTTP,
 				// We use a port > 1024 to not require root
 				InstancePort: 8090,
-				ServicePort: 8090,
+				ServicePort:  8090,
 			},
 		},
-		Subsets: []echo.SubsetConfig{{}},
-		Pilot:   p,
+		Subsets:    []echo.SubsetConfig{{}},
+		Pilot:      p,
 		DeployAsVM: vmImage != "",
-		VMImage: vmImage,
+		VMImage:    vmImage,
 	}
 }

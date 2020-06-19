@@ -28,6 +28,15 @@ import (
 )
 
 func TestTrafficRouting(t *testing.T) {
+	trafficRouting(t)
+}
+
+func TestVMTrafficRouting(t *testing.T) {
+	testcases := []string{"app_sidecar_bionic"}
+	trafficRouting(t, testcases...)
+}
+
+func trafficRouting(t *testing.T, vmImages ...string) {
 	framework.
 		NewTest(t).
 		Run(func(ctx framework.TestContext) {
@@ -36,20 +45,31 @@ func TestTrafficRouting(t *testing.T) {
 				Inject: true,
 			})
 
-			var client, server echo.Instance
-			echoboot.NewBuilderOrFail(t, ctx).
-				With(&client, echoConfig(ns, "client")).
-				With(&server, echoConfig(ns, "server")).
-				BuildOrFail(t)
+			if len(vmImages) == 0 {
+				vmImages = append(vmImages, "")
+			}
 
-			cases := []struct {
-				name      string
-				vs        string
-				validator func(*echoclient.ParsedResponse) error
-			}{
-				{
-					"added header",
-					`
+			for _, vmImage := range vmImages {
+				testName := vmImage
+				if testName == "" {
+					testName = "non_vm"
+				}
+				ctx.NewSubTest(testName).
+					Run(func(ctx framework.TestContext) {
+						var client, server echo.Instance
+						echoboot.NewBuilderOrFail(t, ctx).
+							With(&client, echoVMConfig(ns, "client", "")).
+							With(&server, echoVMConfig(ns, "server", vmImage)).
+							BuildOrFail(t)
+
+						cases := []struct {
+							name      string
+							vs        string
+							validator func(*echoclient.ParsedResponse) error
+						}{
+							{
+								"added header",
+								`
 apiVersion: networking.istio.io/v1alpha3
 kind: VirtualService
 metadata:
@@ -65,16 +85,16 @@ spec:
       request:
         add:
           istio-custom-header: user-defined-value`,
-					func(response *echoclient.ParsedResponse) error {
-						if response.RawResponse["Istio-Custom-Header"] != "user-defined-value" {
-							return fmt.Errorf("missing request header, have %+v", response.RawResponse)
-						}
-						return nil
-					},
-				},
-				{
-					"redirect",
-					`
+								func(response *echoclient.ParsedResponse) error {
+									if response.RawResponse["Istio-Custom-Header"] != "user-defined-value" {
+										return fmt.Errorf("missing request header, have %+v", response.RawResponse)
+									}
+									return nil
+								},
+							},
+							{
+								"redirect",
+								`
 apiVersion: networking.istio.io/v1alpha3
 kind: VirtualService
 metadata:
@@ -94,32 +114,35 @@ spec:
     route:
     - destination:
         host: server`,
-					func(response *echoclient.ParsedResponse) error {
-						if response.URL != "/new/path" {
-							return fmt.Errorf("incorrect URL, have %+v %+v", response.RawResponse["URL"], response.URL)
+								func(response *echoclient.ParsedResponse) error {
+									if response.URL != "/new/path" {
+										return fmt.Errorf("incorrect URL, have %+v %+v", response.RawResponse["URL"], response.URL)
+									}
+									return nil
+								},
+							},
 						}
-						return nil
-					},
-				},
+						for _, tt := range cases {
+							ctx.NewSubTest(tt.name).Run(func(ctx framework.TestContext) {
+								ctx.ApplyConfigOrFail(ctx, ns.Name(), tt.vs)
+								defer ctx.DeleteConfigOrFail(ctx, ns.Name(), tt.vs)
+								retry.UntilSuccessOrFail(ctx, func() error {
+									resp, err := client.Call(echo.CallOptions{
+										Target:   server,
+										PortName: "http",
+									})
+									if err != nil {
+										return err
+									}
+									if len(resp) != 1 {
+										ctx.Fatalf("unexpected response count: %v", resp)
+									}
+									return tt.validator(resp[0])
+								}, retry.Delay(time.Millisecond*100))
+							})
+						}
+					})
 			}
-			for _, tt := range cases {
-				ctx.NewSubTest(tt.name).Run(func(ctx framework.TestContext) {
-					ctx.ApplyConfigOrFail(ctx, ns.Name(), tt.vs)
-					defer ctx.DeleteConfigOrFail(ctx, ns.Name(), tt.vs)
-					retry.UntilSuccessOrFail(ctx, func() error {
-						resp, err := client.Call(echo.CallOptions{
-							Target:   server,
-							PortName: "http",
-						})
-						if err != nil {
-							return err
-						}
-						if len(resp) != 1 {
-							ctx.Fatalf("unexpected response count: %v", resp)
-						}
-						return tt.validator(resp[0])
-					}, retry.Delay(time.Millisecond*100))
-				})
-			}
+
 		})
 }

@@ -72,7 +72,6 @@ type VirtualServiceConfig struct {
 func TestTrafficShifting(t *testing.T) {
 	// set up regular echo instances
 	trafficShifting(t, []string{})
-
 }
 
 func TestVMTrafficShifting(t *testing.T) {
@@ -82,7 +81,6 @@ func TestVMTrafficShifting(t *testing.T) {
 }
 
 func TestVMTrafficShiftingPost(t *testing.T) {
-	// set up echo instances deployed as VMs
 	testcases := []string{"app_sidecar_ubuntu_xenial", "app_sidecar_ubuntu_focal", "app_sidecar_ubuntu_bionic",
 		"app_sidecar_debian_9", "app_sidecar_debian_10"}
 	// mark it to be post-submit
